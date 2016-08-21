@@ -24,12 +24,10 @@ test("Verbose, hard to reuse, easy to forget, additional error handling mechanis
     }
 
     getWeather(null, function (error, weather) {
-      /*
        if (error) {
-       done(error);
-       return;
+         done(error);
+         return;
        }
-       */
       console.log("weather", weather);
     });
 
