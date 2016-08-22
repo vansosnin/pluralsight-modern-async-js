@@ -89,13 +89,9 @@ function Operation() {
                         proxyOp.fail(e);
                         return;
                     }
-                    if (cbResult && cbResult.then) {
-                        cbResult.forwardCompletion(proxyOp);
-                        return;
-                    }
-                    proxyOp.succeed(cbResult);
+                    proxyOp.resolve(cbResult);
                 } else {
-                    proxyOp.succeed(operation.result);
+                    proxyOp.resolve(operation.result);
                 }
             });
         }
@@ -110,11 +106,7 @@ function Operation() {
                         proxyOp.fail(e);
                         return;
                     }
-                    if (cbResult && cbResult.then) {
-                        cbResult.forwardCompletion(proxyOp);
-                        return;
-                    }
-                    proxyOp.succeed(cbResult);
+                    proxyOp.resolve(cbResult);
                 } else {
                     proxyOp.fail(operation.error);
                 }
@@ -137,32 +129,44 @@ function Operation() {
     };
     operation.nodeCallback = (error, result) => {
         if (error) {
-            operation.fail(error);
+            operation.reject(error);
             return;
         }
-        operation.succeed(result);
+        operation.resolve(result);
     };
-    operation.succeed = result => {
+
+    function internalResolve(value) {
+        if (value && value.then) {
+            value.then(internalResolve, internalReject);
+            return;
+        }
+
+        operation.state = "succeeded";
+        operation.result = value;
+        operation.onSuccess.forEach(cb => cb(value));
+    };
+    operation.resolve = value => {
         if (operation.complete === true) {
             return;
         }
         operation.complete = true;
-        operation.state = "succeeded";
-        operation.result = result;
-        operation.onSuccess.forEach(cb => cb(result));
+
+        internalResolve(value);
     };
+
     operation.fail = error => {
         if (operation.complete === true) {
             return;
         }
         operation.complete = true;
+        internalReject(error);
+    };
+    operation.reject = operation.fail;
+    function internalReject(error) {
         operation.state = "failed";
         operation.error = error;
         operation.onError.forEach(cb => cb(error));
-    };
-    operation.forwardCompletion = op => {
-        operation.then(op.succeed);
-    };
+    }
 
     return operation;
 }
@@ -180,8 +184,8 @@ function fetchCurrentCityThatFails() {
 function fetchCurrentCityIndecisive() {
     const operation = new Operation();
     doLater(() => {
-        operation.succeed("NYC");
-        operation.succeed("Philly");
+        operation.resolve("NYC");
+        operation.resolve("Philly");
     });
     return operation;
 }
@@ -196,9 +200,22 @@ function fetchCurrentCityRepeatedFailures() {
 }
 
 
+test("what is resolve", done => {
+    const fetchCurrentCity = new Operation();
+    fetchCurrentCity.resolve("NYC");
+
+    const fetchClone = new Operation();
+    fetchClone.resolve(fetchCurrentCity);
+
+    fetchClone.then(city => {
+        expect(city).toBe("NYC");
+        done();
+    });
+});
+
 test("ensure success handlers are async", done => {
     const operation = new Operation();
-    operation.succeed("New York, NY");
+    operation.resolve("New York, NY");
     operation.then(city => doneAlias());
 
     const doneAlias = done;
@@ -243,6 +260,17 @@ test("thrown error recovery", done => {
         .then(city => {
             throw new Error("whoops");
             return fetchWeather(city);
+        })
+        .catch(e => done());
+});
+
+test("reusing error handlers - errors anywhere", done => {
+    fetchCurrentCity()
+        .then(city => {
+            return fetchForecast();
+        })
+        .then(forecast => {
+            expect(forecast).toBe(expectedForecast);
         })
         .catch(e => done());
 });
