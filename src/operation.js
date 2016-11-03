@@ -45,28 +45,44 @@ function getForecast(city, callback) {
 suite.only("operations");
 
 function fetchCurrentCity() {
-    const operation = new Operation();
-    getCurrentCity(operation.nodeCallback);
-
-    return operation;
+    return new Operation((resolve, reject) => {
+        getCurrentCity((error, result) => {
+            if (error) {
+                reject(error);
+                return;
+            }
+            resolve(result);
+        });
+    });
 }
 
 function fetchWeather(city) {
-    const operation = new Operation();
-    getWeather(city, operation.nodeCallback);
-
-    return operation;
+    return new Operation((resolve, reject) => {
+        getWeather(city, (error, result) => {
+            if (error) {
+                reject(error);
+                return;
+            }
+            resolve(result);
+        });
+    });
 }
 
 function fetchForecast(city) {
-    const operation = new Operation();
-    getForecast(city, operation.nodeCallback);
-
-    return operation;
+    return new Operation((resolve, reject) => {
+        getForecast(city, (error, result) => {
+            if (error) {
+                reject(error);
+                return;
+            }
+            resolve(result);
+        });
+    });
 }
 
-function Operation() {
-    const noop = function() {};
+function Operation(executor) {
+    const noop = function() {
+    };
 
     const operation = {
         state: null,
@@ -82,11 +98,11 @@ function Operation() {
         function successHandler() {
             doLater(() => {
                 if (onSuccess) {
-                    let cbResult
+                    let cbResult;
                     try {
                         cbResult = onSuccess(operation.result);
                     } catch (e) {
-                        proxyOp.fail(e);
+                        proxyOp.reject(e);
                         return;
                     }
                     proxyOp.resolve(cbResult);
@@ -99,16 +115,16 @@ function Operation() {
         function failureHandler() {
             doLater(() => {
                 if (onError) {
-                    let cbResult
+                    let cbResult;
                     try {
                         cbResult = onError(operation.error);
                     } catch (e) {
-                        proxyOp.fail(e);
+                        proxyOp.reject(e);
                         return;
                     }
                     proxyOp.resolve(cbResult);
                 } else {
-                    proxyOp.fail(operation.error);
+                    proxyOp.reject(operation.error);
                 }
             });
         }
@@ -127,13 +143,6 @@ function Operation() {
     operation.catch = onError => {
         return operation.then(null, onError);
     };
-    operation.nodeCallback = (error, result) => {
-        if (error) {
-            operation.reject(error);
-            return;
-        }
-        operation.resolve(result);
-    };
 
     function internalResolve(value) {
         if (value && value.then) {
@@ -144,32 +153,45 @@ function Operation() {
         operation.state = "succeeded";
         operation.result = value;
         operation.onSuccess.forEach(cb => cb(value));
-    };
+    }
+
     operation.resolve = value => {
-        if (operation.complete === true) {
+        if (operation.resolved === true) {
             return;
         }
-        operation.complete = true;
+        operation.resolved = true;
 
         internalResolve(value);
     };
 
-    operation.fail = error => {
-        if (operation.complete === true) {
+    operation.reject = error => {
+        if (operation.resolved === true) {
             return;
         }
-        operation.complete = true;
+        operation.resolved = true;
         internalReject(error);
     };
-    operation.reject = operation.fail;
+
     function internalReject(error) {
         operation.state = "failed";
         operation.error = error;
         operation.onError.forEach(cb => cb(error));
     }
 
+    if (executor) {
+        executor(operation.resolve, operation.reject);
+    }
+
     return operation;
 }
+
+Operation.resolve = value => new Operation(resolve => {
+    resolve(value);
+});
+
+Operation.reject = reason => new Operation((resolve, reject) => {
+    reject(reason);
+});
 
 function doLater(func) {
     setTimeout(func, 1);
@@ -177,7 +199,9 @@ function doLater(func) {
 
 function fetchCurrentCityThatFails() {
     const cityOp = new Operation();
-    doLater(() => {cityOp.fail(new Error("GPS broken"))});
+    doLater(() => {
+        cityOp.reject(new Error("GPS broken"))
+    });
     return cityOp;
 }
 
@@ -193,12 +217,11 @@ function fetchCurrentCityIndecisive() {
 function fetchCurrentCityRepeatedFailures() {
     const operation = new Operation();
     doLater(() => {
-        operation.fail(new Error("fail 1"));
-        operation.fail(new Error("fail 2"));
+        operation.reject(new Error("reject 1"));
+        operation.reject(new Error("reject 2"));
     });
     return operation;
 }
-
 
 test("what is resolve", done => {
     const fetchCurrentCity = new Operation();
@@ -214,24 +237,23 @@ test("what is resolve", done => {
 });
 
 test("ensure success handlers are async", done => {
-    const operation = new Operation();
-    operation.resolve("New York, NY");
-    operation.then(city => doneAlias());
+    Operation
+        .resolve("New York, NY")
+        .then(city => doneAlias());
 
     const doneAlias = done;
 });
 
 test("ensure error handlers are async", done => {
-    const operation = new Operation();
-    operation.fail(new Error("oops"));
-    operation.catch(e => doneAlias());
+    Operation
+        .reject(new Error("oops"))
+        .catch(e => doneAlias());
 
     const doneAlias = done;
 });
 
-test("protect from doubling up on success", done => {
-    fetchCurrentCityIndecisive()
-        .then(e => done());
+test("protect from doubling up on success", () => {
+    return fetchCurrentCityIndecisive();
 });
 
 test("protect from doubling up on failure", done => {
@@ -275,52 +297,48 @@ test("reusing error handlers - errors anywhere", done => {
         .catch(e => done());
 });
 
-test("sync result transformation", done => {
-    fetchCurrentCity()
-        .then(city => {
+test("sync result transformation", () => {
+    return fetchCurrentCity()
+        .then(() => {
             return "10019";
         })
         .then(zip => {
             expect(zip).toBe("10019");
-            done();
         });
 });
 
-test("async error recovery", done => {
-    fetchCurrentCityThatFails()
+test("async error recovery", () => {
+    return fetchCurrentCityThatFails()
         .catch(() => {
             return fetchCurrentCity();
         })
         .then(city => {
             expect(city).toBe(expectedCity);
-            done();
         });
 });
 
-test("sync error recovery", done => {
-    fetchCurrentCityThatFails()
+test("sync error recovery", () => {
+    return fetchCurrentCityThatFails()
         .catch(() => {
             return "default city";
         })
         .then(city => {
             expect(city).toBe("default city");
-            done();
         });
 });
 
-test("error recovery bypassed if not needed", done => {
-    fetchCurrentCity()
+test("error recovery bypassed if not needed", () => {
+    return fetchCurrentCity()
         .catch(() => {
             return "default city";
         })
         .then(city => {
             expect(city).toBe(expectedCity);
-            done();
         });
 });
 
-test("error fallthrough", done => {
-    fetchCurrentCityThatFails()
+test("error fallthrough", () => {
+    return fetchCurrentCityThatFails()
         .then(city => {
             console.log(city);
             return fetchForecast(city);
@@ -328,26 +346,22 @@ test("error fallthrough", done => {
         .then(forecast => {
             expect(forecast).toBe(expectedForecast);
         })
-        .catch(error => {
-            done();
-        });
+        .catch(error => {});
 });
 
-test("life is full off async, nesting is inevitable, let's do something about it", done => {
-    fetchCurrentCity()
+test("life is full off async, nesting is inevitable, let's do something about it", () => {
+    return fetchCurrentCity()
         .then(city => fetchWeather(city))
-        .then(weather => done());
+        .then(weather => {});
 });
 
-test("lexical parallelism", done => {
+test("lexical parallelism", () => {
     const city = "NYC";
     const weatherOp = fetchWeather(city);
     const forecastOp = fetchForecast(city);
 
-    weatherOp.then(weather => {
-        forecastOp.then(forecast => {
-            done();
-        });
+    return weatherOp.then(weather => {
+        forecastOp.then(forecast => {});
     });
 });
 
